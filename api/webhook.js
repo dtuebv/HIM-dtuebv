@@ -87,6 +87,85 @@ export default async function handler(req, res) {
       const dbUserId = users[0]?.id;
 
       // ---------- POSTBACK ----------
+
+      if (data === "confirm_scan") {
+        const resPending = await fetch(
+          `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&action_type=eq.scan&order=created_at.desc&limit=1`,
+          {
+            headers: {
+              apikey: process.env.SUPABASE_KEY,
+              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+            },
+          }
+        );
+      
+        const pending = await resPending.json();
+      
+        if (pending.length === 0) {
+          await reply(event.replyToken, "ไม่พบข้อมูลครับ");
+          return;
+        }
+      
+        const items = pending[0].payload;
+      
+        for (let item of items) {
+          const name = item.name;
+          const quantity = item.quantity || 1;
+      
+          // reuse add logic
+          const productRes = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
+            {
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+      
+          const products = await productRes.json();
+          let productId;
+      
+          if (products.length > 0) {
+            productId = products[0].id;
+          } else {
+            const createRes = await fetch(
+              `${process.env.SUPABASE_URL}/rest/v1/products`,
+              {
+                method: "POST",
+                headers: {
+                  apikey: process.env.SUPABASE_KEY,
+                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                  "Content-Type": "application/json",
+                  Prefer: "return=representation",
+                },
+                body: JSON.stringify({ name }),
+              }
+            );
+      
+            const newProduct = await createRes.json();
+            productId = newProduct[0].id;
+          }
+      
+          await fetch(`${process.env.SUPABASE_URL}/rest/v1/inventories`, {
+            method: "POST",
+            headers: {
+              apikey: process.env.SUPABASE_KEY,
+              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              user_id: dbUserId,
+              product_id: productId,
+              quantity,
+              unit: "ชิ้น",
+            }),
+          });
+        }
+      
+        await reply(event.replyToken, "เพิ่มของจากใบเสร็จเรียบร้อยแล้วครับ 🎉");
+      }
+     
       if (event.type === "postback") {
         const data = event.postback.data;
 
@@ -411,6 +490,101 @@ export default async function handler(req, res) {
       }
 
       // ---------- MESSAGE ----------
+      if (event.type === "message" && event.message.type === "image") {
+        const messageId = event.message.id;
+      
+        // 1. ดึงรูปจาก LINE
+        const imgRes = await fetch(
+          `https://api-data.line.me/v2/bot/message/${messageId}/content`,
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.LINE_TOKEN}`,
+            },
+          }
+        );
+      
+        const arrayBuffer = await imgRes.arrayBuffer();
+        const base64Image = Buffer.from(arrayBuffer).toString("base64");
+      
+        // 2. ส่งไป AI (Gemini / GPT)
+        const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: "Extract items from this receipt. Return JSON array [{name, quantity}]",
+                  },
+                  {
+                    type: "image_url",
+                    image_url: {
+                      url: `data:image/jpeg;base64,${base64Image}`,
+                    },
+                  },
+                ],
+              },
+            ],
+          }),
+        });
+      
+        const aiData = await aiRes.json();
+      
+        let items = [];
+      
+        try {
+          items = JSON.parse(aiData.choices[0].message.content);
+        } catch (e) {
+          await reply(event.replyToken, "อ่านใบเสร็จไม่สำเร็จ ลองใหม่อีกครั้งนะครับ");
+          return;
+        }
+      
+        // 3. save pending
+        await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
+          method: "POST",
+          headers: {
+            apikey: process.env.SUPABASE_KEY,
+            Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            user_id: dbUserId,
+            action_type: "scan",
+            payload: items,
+          }),
+        });
+      
+        // 4. format message
+        let msg = "ผมเจอรายการเหล่านี้ครับ:\n\n";
+      
+        items.slice(0, 10).forEach((i) => {
+          msg += `• ${i.name} ${i.quantity}\n`;
+        });
+      
+        await reply(event.replyToken, msg, {
+          items: [
+            {
+              type: "action",
+              action: { type: "postback", label: "✅ เพิ่มทั้งหมด", data: "confirm_scan" },
+            },
+            {
+              type: "action",
+              action: { type: "postback", label: "❌ ยกเลิก", data: "cancel" },
+            },
+          ],
+        });
+      
+        return;
+      }
+
+      
       if (event.type === "message" && event.message.type === "text") {
         const text = event.message.text;
 
