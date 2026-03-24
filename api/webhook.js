@@ -18,6 +18,25 @@ function parseItem(text) {
   };
 }
 
+function getModeQuickReply() {
+  return {
+    items: [
+      {
+        type: "action",
+        action: { type: "postback", label: "➕ เพิ่ม", data: "start_add" },
+      },
+      {
+        type: "action",
+        action: { type: "postback", label: "➖ ลด", data: "start_use" },
+      },
+      {
+        type: "action",
+        action: { type: "message", label: "📦 ดูของ", text: "ของในบ้าน" },
+      },
+    ],
+  };
+}
+
 async function reply(token, text, quickReply = null) {
   await fetch("https://api.line.me/v2/bot/message/reply", {
     method: "POST",
@@ -31,7 +50,7 @@ async function reply(token, text, quickReply = null) {
         {
           type: "text",
           text,
-          ...(quickReply && { quickReply }),
+          quickReply: quickReply || getModeQuickReply(),
         },
       ],
     }),
@@ -67,7 +86,7 @@ export default async function handler(req, res) {
       if (event.type === "postback") {
         const data = event.postback.data;
 
-        // 🔥 เลือก action (add/use)
+        // 🔥 START ADD
         if (data === "start_add") {
           await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
             method: "POST",
@@ -83,10 +102,11 @@ export default async function handler(req, res) {
             }),
           });
 
-          await reply(event.replyToken, "จะเพิ่มอะไร กี่ชิ้น?");
+          await reply(event.replyToken, "จะเพิ่มอะไร กี่ชิ้นครับ");
           continue;
         }
 
+        // 🔥 START USE
         if (data === "start_use") {
           await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
             method: "POST",
@@ -102,11 +122,11 @@ export default async function handler(req, res) {
             }),
           });
 
-          await reply(event.replyToken, "จะใช้ (ลด) อะไร กี่ชิ้น?");
+          await reply(event.replyToken, "จะใช้ (ลด) อะไร กี่ชิ้นครับ");
           continue;
         }
 
-        // 🔥 confirm action
+        // 🔥 CONFIRM
         if (data === "confirm") {
           const resPending = await fetch(
             `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&order=created_at.desc&limit=1`,
@@ -120,6 +140,11 @@ export default async function handler(req, res) {
 
           const pending = await resPending.json();
           const action = pending[0];
+
+          if (!action || !action.payload?.name) {
+            await reply(event.replyToken, "ไม่พบข้อมูลครับ");
+            continue;
+          }
 
           const { name, quantity, unit } = action.payload;
 
@@ -177,7 +202,7 @@ export default async function handler(req, res) {
 
             await reply(
               event.replyToken,
-              `เพิ่ม "${name}" ${quantity} ${unit} เรียบร้อยแล้ว ✅`
+              `เพิ่ม "${name}" ${quantity} ${unit} เรียบร้อยแล้วครับ ✅`
             );
             continue;
           }
@@ -195,8 +220,9 @@ export default async function handler(req, res) {
             );
 
             const products = await productRes.json();
+
             if (products.length === 0) {
-              await reply(event.replyToken, "ไม่เจอสินค้า 😅");
+              await reply(event.replyToken, "ไม่เจอสินค้านี้ครับ");
               continue;
             }
 
@@ -213,6 +239,12 @@ export default async function handler(req, res) {
             );
 
             const inv = await invRes.json();
+
+            if (inv.length === 0) {
+              await reply(event.replyToken, "ยังไม่มีของนี้ในบ้านครับ");
+              continue;
+            }
+
             const newQty = Math.max(0, inv[0].quantity - quantity);
 
             await fetch(
@@ -231,16 +263,17 @@ export default async function handler(req, res) {
             await reply(
               event.replyToken,
               newQty === 0
-                ? `ใช้ "${name}" แล้วหมด 😅`
-                : `เหลือ ${newQty} ${unit}`
+                ? `ใช้ "${name}" แล้วหมดครับ 😅`
+                : `เหลือ "${name}" ${newQty} ${unit} ครับ`
             );
 
             continue;
           }
         }
 
+        // ❌ CANCEL
         if (data === "cancel") {
-          await reply(event.replyToken, "ยกเลิกแล้ว 👍");
+          await reply(event.replyToken, "ยกเลิกเรียบร้อยครับ 👍");
           continue;
         }
       }
@@ -249,7 +282,7 @@ export default async function handler(req, res) {
       if (event.type === "message" && event.message.type === "text") {
         const text = event.message.text;
 
-        // 🔥 ดูของ
+        // 🔥 VIEW
         if (text.includes("ของในบ้าน")) {
           const invRes = await fetch(
             `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&select=quantity,unit,products(name)`,
@@ -263,17 +296,21 @@ export default async function handler(req, res) {
 
           const items = await invRes.json();
 
-          let message = "📦 ของในบ้าน:\n\n";
+          let message = "📦 ของในบ้านตอนนี้:\n\n";
 
-          items.forEach((i) => {
-            message += `• ${i.products?.name} — ${i.quantity} ${i.unit}\n`;
-          });
+          if (items.length === 0) {
+            message = "ยังไม่มีของในบ้านเลยครับ";
+          } else {
+            items.forEach((i) => {
+              message += `• ${i.products?.name} — ${i.quantity} ${i.unit}\n`;
+            });
+          }
 
           await reply(event.replyToken, message);
           continue;
         }
 
-        // 🔥 check pending (add/use mode)
+        // 🔥 check current mode
         const pendingRes = await fetch(
           `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&order=created_at.desc&limit=1`,
           {
@@ -291,11 +328,13 @@ export default async function handler(req, res) {
           const parsed = parseItem(text);
 
           if (!parsed.quantity) {
-            await reply(event.replyToken, "ต้องใส่จำนวนด้วยนะ เช่น โค้ก 2 ขวด");
+            await reply(
+              event.replyToken,
+              "ต้องใส่จำนวนด้วยนะครับ เช่น โค้ก 2 ขวด"
+            );
             continue;
           }
 
-          // update pending
           await fetch(
             `${process.env.SUPABASE_URL}/rest/v1/pending_actions?id=eq.${current.id}`,
             {
@@ -305,15 +344,13 @@ export default async function handler(req, res) {
                 Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
                 "Content-Type": "application/json",
               },
-              body: JSON.stringify({
-                payload: parsed,
-              }),
+              body: JSON.stringify({ payload: parsed }),
             }
           );
 
           await reply(
             event.replyToken,
-            `${current.action_type === "add" ? "เพิ่ม" : "ใช้"} "${parsed.name}" ${parsed.quantity} ${parsed.unit} ใช่ไหม?`,
+            `${current.action_type === "add" ? "เพิ่ม" : "ใช้"} "${parsed.name}" ${parsed.quantity} ${parsed.unit} ใช่ไหมครับ`,
             {
               items: [
                 {
@@ -331,27 +368,8 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // 🔥 greeting
-        await reply(
-          event.replyToken,
-          "วันนี้จะทำอะไรดีครับ?",
-          {
-            items: [
-              {
-                type: "action",
-                action: { type: "postback", label: "➕ เพิ่มของ", data: "start_add" },
-              },
-              {
-                type: "action",
-                action: { type: "postback", label: "➖ ใช้ของ", data: "start_use" },
-              },
-              {
-                type: "action",
-                action: { type: "message", label: "📦 ดูของ", text: "ของในบ้าน" },
-              },
-            ],
-          }
-        );
+        // 🔥 GREETING
+        await reply(event.replyToken, "วันนี้ต้องการทำอะไรครับ");
       }
     }
 
