@@ -27,7 +27,59 @@ export default async function handler(req, res) {
       if (event.type === "message" && event.message.type === "text") {
         const userId = event.source.userId;
         const text = event.message.text;
-
+        if (text.includes("ของในบ้าน")) {
+          const userRes = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/users?line_user_id=eq.${userId}`,
+            {
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+          
+          const users = await userRes.json();
+          const dbUserId = users[0]?.id;
+          const invRes = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&select=quantity,unit,products(name)`,
+            {
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+          
+          const items = await invRes.json();
+          let message = "📦 ของในบ้านคุณ:\n\n";
+          
+          if (items.length === 0) {
+            message = "ยังไม่มีของในบ้านเลย ลองเพิ่มของก่อนนะ 😊";
+          } else {
+            items.forEach((item) => {
+              const name = item.products?.name || "ไม่รู้จักสินค้า";
+              message += `• ${name} — ${item.quantity} ${item.unit}\n`;
+            });
+          }
+          await fetch("https://api.line.me/v2/bot/message/reply", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.LINE_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              replyToken: event.replyToken,
+              messages: [
+                {
+                  type: "text",
+                  text: message,
+                },
+              ],
+            }),
+          });
+          
+          return;
+          
         const parsed = parseItem(text);
         
         if (parsed) {
