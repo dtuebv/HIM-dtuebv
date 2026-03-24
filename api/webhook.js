@@ -1,4 +1,4 @@
-// ---------- HELPER ----------
+// ---------- HELPERS ----------
 
 function parseItem(text) {
   const match = text.match(/(.+?)\s+(\d+)\s*(.*)/);
@@ -6,8 +6,8 @@ function parseItem(text) {
   if (!match) {
     return {
       name: text.trim(),
-      quantity: null,
-      unit: null,
+      quantity: 1,
+      unit: "ชิ้น",
     };
   }
 
@@ -15,17 +15,6 @@ function parseItem(text) {
     name: match[1].trim(),
     quantity: parseInt(match[2]),
     unit: match[3] || "ชิ้น",
-  };
-}
-
-function parseUse(text) {
-  const match = text.match(/ใช้(.+?)ไป\s*(\d+)/);
-
-  if (!match) return null;
-
-  return {
-    name: match[1].trim(),
-    quantity: parseInt(match[2]),
   };
 }
 
@@ -53,9 +42,7 @@ async function reply(token, text, quickReply = null) {
 
 export default async function handler(req, res) {
   try {
-    if (req.method !== "POST") {
-      return res.status(200).send("OK");
-    }
+    if (req.method !== "POST") return res.status(200).send("OK");
 
     const events = req.body.events || [];
 
@@ -76,7 +63,7 @@ export default async function handler(req, res) {
       const users = await userRes.json();
       const dbUserId = users[0]?.id;
 
-      // ---------- POSTBACK (CONFIRM) ----------
+      // ---------- POSTBACK ----------
       if (event.type === "postback") {
         const data = event.postback.data;
 
@@ -91,19 +78,16 @@ export default async function handler(req, res) {
         );
 
         const pending = await resPending.json();
-
         if (pending.length === 0) {
           await reply(event.replyToken, "ไม่พบรายการ 😅");
           continue;
         }
 
-        const action = pending[0];
+        const { name, quantity, unit } = pending[0].payload;
 
-        // 🔥 CONFIRM ADD
-        if (data === "confirm_add") {
-          const { name, quantity, unit } = action.payload;
-
-          // หา/สร้าง product
+        // 🔥 ADD
+        if (data === "action_add") {
+          // find/create product
           const productRes = await fetch(
             `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
             {
@@ -155,15 +139,13 @@ export default async function handler(req, res) {
 
           await reply(
             event.replyToken,
-            `เพิ่ม "${name}" ${quantity} ${unit} เรียบร้อยแล้ว ✅`
+            `เพิ่ม "${name}" ${quantity} ${unit} แล้ว ✅`
           );
           continue;
         }
 
-        // 🔥 CONFIRM USE
-        if (data === "confirm_use") {
-          const { name, quantity } = action.payload;
-
+        // 🔥 USE
+        if (data === "action_use") {
           const productRes = await fetch(
             `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
             {
@@ -194,7 +176,7 @@ export default async function handler(req, res) {
 
           const inv = await invRes.json();
           if (inv.length === 0) {
-            await reply(event.replyToken, "ไม่มีของนี้ในบ้าน 😅");
+            await reply(event.replyToken, "ไม่มีของนี้ 😅");
             continue;
           }
 
@@ -217,9 +199,15 @@ export default async function handler(req, res) {
             event.replyToken,
             newQty === 0
               ? `ใช้ "${name}" แล้วหมด 😅`
-              : `เหลือ "${name}" ${newQty} ชิ้น`
+              : `เหลือ ${newQty} ${unit}`
           );
 
+          continue;
+        }
+
+        // ❌ CANCEL
+        if (data === "cancel") {
+          await reply(event.replyToken, "ยกเลิกแล้ว 👍");
           continue;
         }
       }
@@ -228,7 +216,7 @@ export default async function handler(req, res) {
       if (event.type === "message" && event.message.type === "text") {
         const text = event.message.text;
 
-        // 🔹 ดูของ
+        // ดูของ
         if (text.includes("ของในบ้าน")) {
           const invRes = await fetch(
             `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&select=quantity,unit,products(name)`,
@@ -242,104 +230,66 @@ export default async function handler(req, res) {
 
           const items = await invRes.json();
 
-          let message = "📦 ของในบ้านคุณ:\n\n";
+          let message = "📦 ของในบ้าน:\n\n";
 
-          if (items.length === 0) {
-            message = "ยังไม่มีของเลย 😊";
-          } else {
-            items.forEach((i) => {
-              message += `• ${i.products?.name} — ${i.quantity} ${i.unit}\n`;
-            });
-          }
+          items.forEach((i) => {
+            message += `• ${i.products?.name} — ${i.quantity} ${i.unit}\n`;
+          });
 
           await reply(event.replyToken, message);
           continue;
         }
 
-        // 🔥 ใช้ของ
-        const useParsed = parseUse(text);
-        if (useParsed) {
-          await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
-            method: "POST",
-            headers: {
-              apikey: process.env.SUPABASE_KEY,
-              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              user_id: dbUserId,
-              action_type: "use",
-              payload: useParsed,
-            }),
-          });
-
-          await reply(
-            event.replyToken,
-            `จะใช้ "${useParsed.name}" ${useParsed.quantity} ใช่ไหม?`,
-            {
-              items: [
-                {
-                  type: "action",
-                  action: {
-                    type: "postback",
-                    label: "✅ ยืนยัน",
-                    data: "confirm_use",
-                  },
-                },
-              ],
-            }
-          );
-
-          continue;
-        }
-
-        // 🔥 เพิ่มของ
+        // 🔥 parse only (no intent)
         const parsed = parseItem(text);
 
-        if (parsed && !parsed.quantity) {
-          await reply(event.replyToken, `จะเพิ่ม "${parsed.name}" กี่ชิ้นครับ?`);
-          continue;
-        }
+        // save pending
+        await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
+          method: "POST",
+          headers: {
+            apikey: process.env.SUPABASE_KEY,
+            Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            user_id: dbUserId,
+            action_type: "unknown",
+            payload: parsed,
+          }),
+        });
 
-        if (parsed) {
-          await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
-            method: "POST",
-            headers: {
-              apikey: process.env.SUPABASE_KEY,
-              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              user_id: dbUserId,
-              action_type: "add",
-              payload: parsed,
-            }),
-          });
-
-          await reply(
-            event.replyToken,
-            `เพิ่ม "${parsed.name}" ${parsed.quantity} ${parsed.unit} ใช่ไหม?`,
-            {
-              items: [
-                {
-                  type: "action",
-                  action: {
-                    type: "postback",
-                    label: "✅ ยืนยัน",
-                    data: "confirm_add",
-                  },
-                },
-              ],
-            }
-          );
-
-          continue;
-        }
-
-        // fallback
+        // 🔥 ask action
         await reply(
           event.replyToken,
-          "ลองพิมพ์:\nน้ำยาซักผ้า 2 ขวด\nใช้โค้กไป 1\nของในบ้าน"
+          `ต้องการทำอะไรกับ "${parsed.name}" ${parsed.quantity} ${parsed.unit}?`,
+          {
+            items: [
+              {
+                type: "action",
+                action: {
+                  type: "postback",
+                  label: "➕ เพิ่ม",
+                  data: "action_add",
+                },
+              },
+              {
+                type: "action",
+                action: {
+                  type: "postback",
+                  label: "➖ ใช้",
+                  data: "action_use",
+                },
+              },
+              {
+                type: "action",
+                action: {
+                  type: "postback",
+                  label: "❌ ยกเลิก",
+                  data: "cancel",
+                },
+              },
+            ],
+          }
         );
       }
     }
