@@ -87,34 +87,13 @@ export default async function handler(req, res) {
       const dbUserId = users[0]?.id;
 
       // ---------- POSTBACK ----------
+      if (event.type === "postback") {
+        const data = event.postback.data;
 
-      if (data === "confirm_scan") {
-        const resPending = await fetch(
-          `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&action_type=eq.scan&order=created_at.desc&limit=1`,
-          {
-            headers: {
-              apikey: process.env.SUPABASE_KEY,
-              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-            },
-          }
-        );
-      
-        const pending = await resPending.json();
-      
-        if (pending.length === 0) {
-          await reply(event.replyToken, "ไม่พบข้อมูลครับ");
-          return;
-        }
-      
-        const items = pending[0].payload;
-      
-        for (let item of items) {
-          const name = item.name;
-          const quantity = item.quantity || 1;
-      
-          // reuse add logic
-          const productRes = await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
+        // 🔥 CONFIRM SCAN (FIXED POSITION)
+        if (data === "confirm_scan") {
+          const resPending = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&action_type=eq.scan&order=created_at.desc&limit=1`,
             {
               headers: {
                 apikey: process.env.SUPABASE_KEY,
@@ -122,52 +101,73 @@ export default async function handler(req, res) {
               },
             }
           );
-      
-          const products = await productRes.json();
-          let productId;
-      
-          if (products.length > 0) {
-            productId = products[0].id;
-          } else {
-            const createRes = await fetch(
-              `${process.env.SUPABASE_URL}/rest/v1/products`,
+
+          const pending = await resPending.json();
+
+          if (pending.length === 0) {
+            await reply(event.replyToken, "ไม่พบข้อมูลครับ");
+            continue;
+          }
+
+          const items = pending[0].payload;
+
+          for (let item of items) {
+            const name = item.name;
+            const quantity = item.quantity || 1;
+
+            const productRes = await fetch(
+              `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
               {
-                method: "POST",
                 headers: {
                   apikey: process.env.SUPABASE_KEY,
                   Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                  "Content-Type": "application/json",
-                  Prefer: "return=representation",
                 },
-                body: JSON.stringify({ name }),
               }
             );
-      
-            const newProduct = await createRes.json();
-            productId = newProduct[0].id;
+
+            const products = await productRes.json();
+            let productId;
+
+            if (products.length > 0) {
+              productId = products[0].id;
+            } else {
+              const createRes = await fetch(
+                `${process.env.SUPABASE_URL}/rest/v1/products`,
+                {
+                  method: "POST",
+                  headers: {
+                    apikey: process.env.SUPABASE_KEY,
+                    Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                    "Content-Type": "application/json",
+                    Prefer: "return=representation",
+                  },
+                  body: JSON.stringify({ name }),
+                }
+              );
+
+              const newProduct = await createRes.json();
+              productId = newProduct[0].id;
+            }
+
+            await fetch(`${process.env.SUPABASE_URL}/rest/v1/inventories`, {
+              method: "POST",
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                user_id: dbUserId,
+                product_id: productId,
+                quantity,
+                unit: "ชิ้น",
+              }),
+            });
           }
-      
-          await fetch(`${process.env.SUPABASE_URL}/rest/v1/inventories`, {
-            method: "POST",
-            headers: {
-              apikey: process.env.SUPABASE_KEY,
-              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              user_id: dbUserId,
-              product_id: productId,
-              quantity,
-              unit: "ชิ้น",
-            }),
-          });
+
+          await reply(event.replyToken, "เพิ่มของจากใบเสร็จเรียบร้อยแล้วครับ 🎉");
+          continue;
         }
-      
-        await reply(event.replyToken, "เพิ่มของจากใบเสร็จเรียบร้อยแล้วครับ 🎉");
-      }
-     
-      if (event.type === "postback") {
-        const data = event.postback.data;
 
         // 🔥 START ADD
         if (data === "start_add") {
@@ -209,291 +209,17 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // 🔥 DELETE
-        if (data === "start_delete") {
-          // ดึง inventory
-          const invRes = await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&select=id,products(name)`,
-            {
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              },
-            }
-          );
-        
-          const items = await invRes.json();
-        
-          if (items.length === 0) {
-            await reply(event.replyToken, "ยังไม่มีของให้ลบครับ");
-            continue;
-          }
-        
-          // สร้าง quick reply list
-          const quickReply = {
-            items: items.slice(0, 10).map((item) => ({
-              type: "action",
-              action: {
-                type: "postback",
-                label: item.products?.name,
-                data: `delete_select:${item.id}`,
-              },
-            })),
-          };
-        
-          await reply(event.replyToken, "เลือกสินค้าที่ต้องการลบครับ", quickReply);
-          continue;
-        }
-
-        // 🔥 DELETE SELECT
-        if (data.startsWith("delete_select:")) {
-          const invId = data.split(":")[1];
-        
-          // ดึงข้อมูล item
-          const resItem = await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${invId}&select=id,products(name)`,
-            {
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              },
-            }
-          );
-        
-          const item = (await resItem.json())[0];
-        
-          // save pending
-          await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
-            method: "POST",
-            headers: {
-              apikey: process.env.SUPABASE_KEY,
-              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              user_id: dbUserId,
-              action_type: "delete",
-              payload: {
-                inventory_id: invId,
-                name: item.products?.name,
-              },
-            }),
-          });
-        
-          await reply(
-            event.replyToken,
-            `ต้องการลบ "${item.products?.name}" ออกจากคลังใช่ไหมครับ`,
-            {
-              items: [
-                {
-                  type: "action",
-                  action: { type: "postback", label: "✅ ยืนยัน", data: "confirm_delete" },
-                },
-                {
-                  type: "action",
-                  action: { type: "postback", label: "❌ ยกเลิก", data: "cancel" },
-                },
-              ],
-            }
-          );
-        
-          continue;
-        }
-
-        // 🔥 CONFIRM DELETE
-        if (data === "confirm_delete") {
-          const resPending = await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&action_type=eq.delete&order=created_at.desc&limit=1`,
-            {
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              },
-            }
-          );
-        
-          const pending = await resPending.json();
-        
-          if (pending.length === 0) {
-            await reply(event.replyToken, "ไม่พบข้อมูลครับ");
-            continue;
-          }
-        
-          const { inventory_id, name } = pending[0].payload;
-        
-          // delete จริง
-          await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${inventory_id}`,
-            {
-              method: "DELETE",
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              },
-            }
-          );
-        
-          await reply(event.replyToken, `ลบ "${name}" ออกจากคลังแล้วครับ 🗑`);
-          continue;
-        }
-        
-        // 🔥 CONFIRM
-        if (data === "confirm") {
-          const resPending = await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&order=created_at.desc&limit=1`,
-            {
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              },
-            }
-          );
-
-          const pending = await resPending.json();
-          const action = pending[0];
-
-          if (!action || !action.payload?.name) {
-            await reply(event.replyToken, "ไม่พบข้อมูลครับ");
-            continue;
-          }
-
-          const { name, quantity, unit } = action.payload;
-
-          // ---------- ADD ----------
-          if (action.action_type === "add") {
-            let productId;
-
-            const productRes = await fetch(
-              `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
-              {
-                headers: {
-                  apikey: process.env.SUPABASE_KEY,
-                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                },
-              }
-            );
-
-            const products = await productRes.json();
-
-            if (products.length > 0) {
-              productId = products[0].id;
-            } else {
-              const createRes = await fetch(
-                `${process.env.SUPABASE_URL}/rest/v1/products`,
-                {
-                  method: "POST",
-                  headers: {
-                    apikey: process.env.SUPABASE_KEY,
-                    Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                    "Content-Type": "application/json",
-                    Prefer: "return=representation",
-                  },
-                  body: JSON.stringify({ name }),
-                }
-              );
-
-              const newProduct = await createRes.json();
-              productId = newProduct[0].id;
-            }
-
-            await fetch(`${process.env.SUPABASE_URL}/rest/v1/inventories`, {
-              method: "POST",
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                user_id: dbUserId,
-                product_id: productId,
-                quantity,
-                unit,
-              }),
-            });
-
-            await reply(
-              event.replyToken,
-              `เพิ่ม "${name}" ${quantity} ${unit} เรียบร้อยแล้วครับ ✅`
-            );
-            continue;
-          }
-
-          // ---------- USE ----------
-          if (action.action_type === "use") {
-            const productRes = await fetch(
-              `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
-              {
-                headers: {
-                  apikey: process.env.SUPABASE_KEY,
-                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                },
-              }
-            );
-
-            const products = await productRes.json();
-
-            if (products.length === 0) {
-              await reply(event.replyToken, "ไม่เจอสินค้านี้ครับ");
-              continue;
-            }
-
-            const productId = products[0].id;
-
-            const invRes = await fetch(
-              `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&product_id=eq.${productId}`,
-              {
-                headers: {
-                  apikey: process.env.SUPABASE_KEY,
-                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                },
-              }
-            );
-
-            const inv = await invRes.json();
-
-            if (inv.length === 0) {
-              await reply(event.replyToken, "ยังไม่มีของนี้ในบ้านครับ");
-              continue;
-            }
-
-            const newQty = Math.max(0, inv[0].quantity - quantity);
-
-            await fetch(
-              `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${inv[0].id}`,
-              {
-                method: "PATCH",
-                headers: {
-                  apikey: process.env.SUPABASE_KEY,
-                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({ quantity: newQty }),
-              }
-            );
-
-            await reply(
-              event.replyToken,
-              newQty === 0
-                ? `ใช้ "${name}" แล้วหมดครับ 😅`
-                : `เหลือ "${name}" ${newQty} ${unit} ครับ`
-            );
-
-            continue;
-          }
-        }
-
-        // ❌ CANCEL
+        // 🔥 CANCEL
         if (data === "cancel") {
           await reply(event.replyToken, "ยกเลิกเรียบร้อยครับ 👍");
           continue;
         }
       }
 
-      // ---------- MESSAGE ----------
+      // ---------- IMAGE (SCAN) ----------
       if (event.type === "message" && event.message.type === "image") {
         const messageId = event.message.id;
-      
-        // 1. ดึงรูปจาก LINE
+
         const imgRes = await fetch(
           `https://api-data.line.me/v2/bot/message/${messageId}/content`,
           {
@@ -502,24 +228,21 @@ export default async function handler(req, res) {
             },
           }
         );
-      
+
         const arrayBuffer = await imgRes.arrayBuffer();
         const base64Image = Buffer.from(arrayBuffer).toString("base64");
-      
-        // 2. ส่งไป AI (Gemini / GPT)
+
         const aiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
           {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               contents: [
                 {
                   parts: [
                     {
-                      text: "Extract items from this receipt. Return JSON array [{name, quantity}]",
+                      text: "Extract items from this receipt. Return ONLY JSON array [{name, quantity}]",
                     },
                     {
                       inlineData: {
@@ -533,22 +256,28 @@ export default async function handler(req, res) {
             }),
           }
         );
-        
+
         const aiData = await aiRes.json();
-        
+
+        if (!aiData.candidates) {
+          await reply(event.replyToken, "AI มีปัญหานิดหน่อย ลองใหม่อีกครั้งนะครับ");
+          return;
+        }
+
         let items = [];
-        
+
         try {
-          const text = aiData.candidates[0].content.parts[0].text;
-        
-          // Gemini มักตอบเป็น text → ต้อง parse
-          items = JSON.parse(text);
+          const raw = aiData.candidates[0].content.parts[0].text;
+          const jsonMatch = raw.match(/\[.*\]/s);
+
+          if (!jsonMatch) throw new Error();
+
+          items = JSON.parse(jsonMatch[0]);
         } catch (e) {
           await reply(event.replyToken, "อ่านใบเสร็จไม่สำเร็จ ลองใหม่อีกครั้งนะครับ");
           return;
         }
-      
-        // 3. save pending
+
         await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
           method: "POST",
           headers: {
@@ -562,14 +291,12 @@ export default async function handler(req, res) {
             payload: items,
           }),
         });
-      
-        // 4. format message
+
         let msg = "ผมเจอรายการเหล่านี้ครับ:\n\n";
-      
         items.slice(0, 10).forEach((i) => {
           msg += `• ${i.name} ${i.quantity}\n`;
         });
-      
+
         await reply(event.replyToken, msg, {
           items: [
             {
@@ -582,24 +309,17 @@ export default async function handler(req, res) {
             },
           ],
         });
-      
+
         return;
       }
 
-      
+      // ---------- TEXT ----------
       if (event.type === "message" && event.message.type === "text") {
         const text = event.message.text;
 
-        // 🔥 VIEW
         if (text.includes("ของในบ้าน")) {
           const invRes = await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&select=quantity,unit,products(name)`,
-            {
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              },
-            }
+            `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&select=quantity,unit,products(name)`
           );
 
           const items = await invRes.json();
@@ -618,65 +338,6 @@ export default async function handler(req, res) {
           continue;
         }
 
-        // 🔥 check current mode
-        const pendingRes = await fetch(
-          `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&order=created_at.desc&limit=1`,
-          {
-            headers: {
-              apikey: process.env.SUPABASE_KEY,
-              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-            },
-          }
-        );
-
-        const pending = await pendingRes.json();
-        const current = pending[0];
-
-        if (current && (current.action_type === "add" || current.action_type === "use")) {
-          const parsed = parseItem(text);
-
-          if (!parsed.quantity) {
-            await reply(
-              event.replyToken,
-              "ต้องใส่จำนวนด้วยนะครับ เช่น โค้ก 2 ขวด"
-            );
-            continue;
-          }
-
-          await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/pending_actions?id=eq.${current.id}`,
-            {
-              method: "PATCH",
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ payload: parsed }),
-            }
-          );
-
-          await reply(
-            event.replyToken,
-            `${current.action_type === "add" ? "เพิ่ม" : "ใช้"} "${parsed.name}" ${parsed.quantity} ${parsed.unit} ใช่ไหมครับ`,
-            {
-              items: [
-                {
-                  type: "action",
-                  action: { type: "postback", label: "✅ ยืนยัน", data: "confirm" },
-                },
-                {
-                  type: "action",
-                  action: { type: "postback", label: "❌ ยกเลิก", data: "cancel" },
-                },
-              ],
-            }
-          );
-
-          continue;
-        }
-
-        // 🔥 GREETING
         await reply(event.replyToken, "วันนี้ต้องการทำอะไรครับ");
       }
     }
