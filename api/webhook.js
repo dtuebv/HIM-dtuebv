@@ -1,7 +1,5 @@
 function parseItem(text) {
-  // ตัวอย่าง: "น้ำยาซักผ้า 2 ขวด"
   const match = text.match(/(.+?)\s+(\d+)\s*(.*)/);
-
   if (!match) return null;
 
   return {
@@ -17,29 +15,29 @@ export default async function handler(req, res) {
       return res.status(200).send("OK");
     }
 
-    const body = req.body;
-
-    console.log("BODY:", JSON.stringify(body));
-
-    const events = body.events || [];
+    const events = req.body.events || [];
 
     for (let event of events) {
       if (event.type === "message" && event.message.type === "text") {
         const userId = event.source.userId;
         const text = event.message.text;
+
+        // 🔹 get user
+        const userRes = await fetch(
+          `${process.env.SUPABASE_URL}/rest/v1/users?line_user_id=eq.${userId}`,
+          {
+            headers: {
+              apikey: process.env.SUPABASE_KEY,
+              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+            },
+          }
+        );
+
+        const users = await userRes.json();
+        const dbUserId = users[0]?.id;
+
+        // 🔥 CASE 1: ดูของในบ้าน
         if (text.includes("ของในบ้าน")) {
-          const userRes = await fetch(
-            `${process.env.SUPABASE_URL}/rest/v1/users?line_user_id=eq.${userId}`,
-            {
-              headers: {
-                apikey: process.env.SUPABASE_KEY,
-                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-              },
-            }
-          );
-          
-          const users = await userRes.json();
-          const dbUserId = users[0]?.id;
           const invRes = await fetch(
             `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&select=quantity,unit,products(name)`,
             {
@@ -49,18 +47,25 @@ export default async function handler(req, res) {
               },
             }
           );
-          
+
           const items = await invRes.json();
-          let message = "📦 ของในบ้านคุณ:\n\n";
-          
+
+          let message = "📦 ของในบ้านคุณตอนนี้:\n\n";
+
           if (items.length === 0) {
             message = "ยังไม่มีของในบ้านเลย ลองเพิ่มของก่อนนะ 😊";
           } else {
             items.forEach((item) => {
               const name = item.products?.name || "ไม่รู้จักสินค้า";
-              message += `• ${name} — ${item.quantity} ${item.unit}\n`;
+
+              if (item.quantity <= 0) {
+                message += `• ${name} — หมดแล้ว 😅\n`;
+              } else {
+                message += `• ${name} — ${item.quantity} ${item.unit}\n`;
+              }
             });
           }
+
           await fetch("https://api.line.me/v2/bot/message/reply", {
             method: "POST",
             headers: {
@@ -69,23 +74,20 @@ export default async function handler(req, res) {
             },
             body: JSON.stringify({
               replyToken: event.replyToken,
-              messages: [
-                {
-                  type: "text",
-                  text: message,
-                },
-              ],
+              messages: [{ type: "text", text: message }],
             }),
           });
-          
-          return;
-          
+
+          continue;
+        }
+
+        // 🔥 CASE 2: เพิ่มของ
         const parsed = parseItem(text);
-        
+
         if (parsed) {
           const { name, quantity, unit } = parsed;
-        
-          // 1. หา product
+
+          // หา product
           const productRes = await fetch(
             `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
             {
@@ -95,15 +97,14 @@ export default async function handler(req, res) {
               },
             }
           );
-        
+
           const products = await productRes.json();
-        
+
           let productId;
-        
+
           if (products.length > 0) {
             productId = products[0].id;
           } else {
-            // 2. create product
             const createRes = await fetch(
               `${process.env.SUPABASE_URL}/rest/v1/products`,
               {
@@ -114,31 +115,15 @@ export default async function handler(req, res) {
                   "Content-Type": "application/json",
                   Prefer: "return=representation",
                 },
-                body: JSON.stringify({
-                  name: name,
-                }),
+                body: JSON.stringify({ name }),
               }
             );
-        
+
             const newProduct = await createRes.json();
             productId = newProduct[0].id;
           }
 
-            // get user from DB
-            const userRes = await fetch(
-              `${process.env.SUPABASE_URL}/rest/v1/users?line_user_id=eq.${userId}`,
-              {
-                headers: {
-                  apikey: process.env.SUPABASE_KEY,
-                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-                },
-              }
-            );
-            
-            const users = await userRes.json();
-            const dbUserId = users[0]?.id;
-          
-          // 3. update inventory
+          // update inventory
           await fetch(`${process.env.SUPABASE_URL}/rest/v1/inventories`, {
             method: "POST",
             headers: {
@@ -149,12 +134,11 @@ export default async function handler(req, res) {
             body: JSON.stringify({
               user_id: dbUserId,
               product_id: productId,
-              quantity: quantity,
-              unit: unit,
+              quantity,
+              unit,
             }),
           });
-        
-          // 4. reply
+
           await fetch("https://api.line.me/v2/bot/message/reply", {
             method: "POST",
             headers: {
@@ -171,25 +155,11 @@ export default async function handler(req, res) {
               ],
             }),
           });
-        
-          return;
-        }     
 
-        // save user
-        await fetch(process.env.SUPABASE_URL + "/rest/v1/users", {
-          method: "POST",
-          headers: {
-            apikey: process.env.SUPABASE_KEY,
-            Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
-            "Content-Type": "application/json",
-            Prefer: "resolution=merge-duplicates",
-          },
-          body: JSON.stringify({
-            line_user_id: userId,
-          }),
-        });
+          continue;
+        }
 
-        // reply
+        // 🔹 fallback
         await fetch("https://api.line.me/v2/bot/message/reply", {
           method: "POST",
           headers: {
@@ -201,7 +171,7 @@ export default async function handler(req, res) {
             messages: [
               {
                 type: "text",
-                text: `คุณพิมพ์ว่า: ${text}`,
+                text: "ลองพิมพ์ เช่น:\nน้ำยาซักผ้า 2 ขวด\nหรือ\nของในบ้าน",
               },
             ],
           }),
