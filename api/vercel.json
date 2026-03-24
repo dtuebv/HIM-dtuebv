@@ -1,8 +1,8 @@
 {
-  "routes": [
+  "crons": [
     {
-      "src": "/webhook",
-      "dest": "/api/webhook"
+      "path": "/api/cron",
+      "schedule": "0 9 * * *"
     }
   ]
 }
