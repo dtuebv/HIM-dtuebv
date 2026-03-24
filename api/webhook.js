@@ -1,3 +1,17 @@
+async function reply(token, text) {
+  await fetch("https://api.line.me/v2/bot/message/reply", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.LINE_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      replyToken: token,
+      messages: [{ type: "text", text }],
+    }),
+  });
+}
+
 function parseItem(text) {
   const match = text.match(/(.+?)\s+(\d+)\s*(.*)/);
   if (!match) return null;
@@ -6,6 +20,17 @@ function parseItem(text) {
     name: match[1].trim(),
     quantity: parseInt(match[2]),
     unit: match[3] || "ชิ้น",
+  };
+}
+
+function parseUse(text) {
+  const match = text.match(/ใช้(.+?)ไป\s*(\d+)/);
+
+  if (!match) return null;
+
+  return {
+    name: match[1].trim(),
+    quantity: parseInt(match[2]),
   };
 }
 
@@ -81,6 +106,78 @@ export default async function handler(req, res) {
           continue;
         }
 
+        const useParsed = parseUse(text);
+        
+        if (useParsed) {
+          const { name, quantity } = useParsed;
+        
+          // หา product
+          const productRes = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
+            {
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+        
+          const products = await productRes.json();
+        
+          if (products.length === 0) {
+            await reply(event.replyToken, `ไม่เจอ "${name}" ในระบบนะ 😅`);
+            continue;
+          }
+        
+          const productId = products[0].id;
+        
+          // หา inventory
+          const invRes = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&product_id=eq.${productId}`,
+            {
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+        
+          const inv = await invRes.json();
+        
+          if (inv.length === 0) {
+            await reply(event.replyToken, `คุณยังไม่มี "${name}" ใน stock 😅`);
+            continue;
+          }
+        
+          const currentQty = inv[0].quantity;
+          const newQty = Math.max(0, currentQty - quantity);
+        
+          // update
+          await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${inv[0].id}`,
+            {
+              method: "PATCH",
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                quantity: newQty,
+              }),
+            }
+          );
+        
+          let msg =
+            newQty === 0
+              ? `ใช้ "${name}" ไป ${quantity} — ตอนนี้หมดแล้ว 😅`
+              : `ใช้ "${name}" ไป ${quantity}\nเหลือ ${newQty} ชิ้น`;
+        
+          await reply(event.replyToken, msg);
+        
+          continue;
+        }
+        
         // 🔥 CASE 2: เพิ่มของ
         const parsed = parseItem(text);
 
