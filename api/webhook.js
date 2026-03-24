@@ -507,40 +507,42 @@ export default async function handler(req, res) {
         const base64Image = Buffer.from(arrayBuffer).toString("base64");
       
         // 2. ส่งไป AI (Gemini / GPT)
-        const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "gpt-4o-mini",
-            messages: [
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "text",
-                    text: "Extract items from this receipt. Return JSON array [{name, quantity}]",
-                  },
-                  {
-                    type: "image_url",
-                    image_url: {
-                      url: `data:image/jpeg;base64,${base64Image}`,
+        const aiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              contents: [
+                {
+                  parts: [
+                    {
+                      text: "Extract items from this receipt. Return JSON array [{name, quantity}]",
                     },
-                  },
-                ],
-              },
-            ],
-          }),
-        });
-      
+                    {
+                      inlineData: {
+                        mimeType: "image/jpeg",
+                        data: base64Image,
+                      },
+                    },
+                  ],
+                },
+              ],
+            }),
+          }
+        );
+        
         const aiData = await aiRes.json();
-      
+        
         let items = [];
-      
+        
         try {
-          items = JSON.parse(aiData.choices[0].message.content);
+          const text = aiData.candidates[0].content.parts[0].text;
+        
+          // Gemini มักตอบเป็น text → ต้อง parse
+          items = JSON.parse(text);
         } catch (e) {
           await reply(event.replyToken, "อ่านใบเสร็จไม่สำเร็จ ลองใหม่อีกครั้งนะครับ");
           return;
