@@ -31,6 +31,10 @@ function getModeQuickReply() {
       },
       {
         type: "action",
+        action: { type: "postback", label: "🗑 ลบ", data: "start_delete" },
+      },
+      {
+        type: "action",
         action: { type: "message", label: "📦 ดูของ", text: "ของในบ้าน" },
       },
     ],
@@ -126,6 +130,134 @@ export default async function handler(req, res) {
           continue;
         }
 
+        // 🔥 DELETE
+        if (data === "start_delete") {
+          // ดึง inventory
+          const invRes = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&select=id,products(name)`,
+            {
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+        
+          const items = await invRes.json();
+        
+          if (items.length === 0) {
+            await reply(event.replyToken, "ยังไม่มีของให้ลบครับ");
+            continue;
+          }
+        
+          // สร้าง quick reply list
+          const quickReply = {
+            items: items.slice(0, 10).map((item) => ({
+              type: "action",
+              action: {
+                type: "postback",
+                label: item.products?.name,
+                data: `delete_select:${item.id}`,
+              },
+            })),
+          };
+        
+          await reply(event.replyToken, "เลือกสินค้าที่ต้องการลบครับ", quickReply);
+          continue;
+        }
+
+        // 🔥 DELETE SELECT
+        if (data.startsWith("delete_select:")) {
+          const invId = data.split(":")[1];
+        
+          // ดึงข้อมูล item
+          const resItem = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${invId}&select=id,products(name)`,
+            {
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+        
+          const item = (await resItem.json())[0];
+        
+          // save pending
+          await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_actions`, {
+            method: "POST",
+            headers: {
+              apikey: process.env.SUPABASE_KEY,
+              Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              user_id: dbUserId,
+              action_type: "delete",
+              payload: {
+                inventory_id: invId,
+                name: item.products?.name,
+              },
+            }),
+          });
+        
+          await reply(
+            event.replyToken,
+            `ต้องการลบ "${item.products?.name}" ออกจากคลังใช่ไหมครับ`,
+            {
+              items: [
+                {
+                  type: "action",
+                  action: { type: "postback", label: "✅ ยืนยัน", data: "confirm_delete" },
+                },
+                {
+                  type: "action",
+                  action: { type: "postback", label: "❌ ยกเลิก", data: "cancel" },
+                },
+              ],
+            }
+          );
+        
+          continue;
+        }
+
+        // 🔥 CONFIRM DELETE
+        if (data === "confirm_delete") {
+          const resPending = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/pending_actions?user_id=eq.${dbUserId}&action_type=eq.delete&order=created_at.desc&limit=1`,
+            {
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+        
+          const pending = await resPending.json();
+        
+          if (pending.length === 0) {
+            await reply(event.replyToken, "ไม่พบข้อมูลครับ");
+            continue;
+          }
+        
+          const { inventory_id, name } = pending[0].payload;
+        
+          // delete จริง
+          await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${inventory_id}`,
+            {
+              method: "DELETE",
+              headers: {
+                apikey: process.env.SUPABASE_KEY,
+                Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+              },
+            }
+          );
+        
+          await reply(event.replyToken, `ลบ "${name}" ออกจากคลังแล้วครับ 🗑`);
+          continue;
+        }
+        
         // 🔥 CONFIRM
         if (data === "confirm") {
           const resPending = await fetch(
