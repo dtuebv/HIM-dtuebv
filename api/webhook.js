@@ -351,7 +351,17 @@ export default async function handler(req, res) {
 
             const inv = await invRes.json();
             const currentQty = inv[0].quantity;
-            const newQty = Math.max(0, currentQty - quantity);
+            
+            // 🔥 CHECK ของพอไหม
+            if (quantity > currentQty) {
+              await reply(
+                event.replyToken,
+                `จำนวนของไม่ถูกต้องครับ ❌\nตอนนี้มีแค่ "${name}" ${currentQty} ${unit}`
+              );
+              return;
+            }
+            
+            const newQty = currentQty - quantity;
 
             await fetch(
               `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${inv[0].id}`,
