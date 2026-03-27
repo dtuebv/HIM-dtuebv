@@ -277,6 +277,47 @@ export default async function handler(req, res) {
 
           // ---------- ADD ----------
           if (action.action_type === "add") {
+            // 🔥 check inventory ว่ามีอยู่ไหม
+            const invRes = await fetch(
+              `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&product_id=eq.${productId}`,
+              {
+                headers: {
+                  apikey: process.env.SUPABASE_KEY,
+                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                },
+              }
+            );
+            
+            const inv = await invRes.json();
+            
+            // ✅ ถ้ามี → UPDATE
+            if (inv.length > 0) {
+              const newQty = inv[0].quantity + quantity;
+            
+              await fetch(
+                `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${inv[0].id}`,
+                {
+                  method: "PATCH",
+                  headers: {
+                    apikey: process.env.SUPABASE_KEY,
+                    Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    quantity: newQty,
+                  }),
+                }
+              );
+            
+              await reply(
+                event.replyToken,
+                `เพิ่ม "${name}" แล้วครับ ตอนนี้มี ${newQty} ${unit}`
+              );
+            
+              return;
+            }
+            
+            // ❌ ไม่มี → INSERT ใหม่
             await fetch(`${process.env.SUPABASE_URL}/rest/v1/inventories`, {
               method: "POST",
               headers: {
