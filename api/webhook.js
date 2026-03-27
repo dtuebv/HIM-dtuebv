@@ -208,7 +208,69 @@ export default async function handler(req, res) {
 
           // 🔥 USE
           if (action.action_type === "use") {
-            await reply(event.replyToken, `ลด "${name}" เรียบร้อยแล้วครับ`);
+            const productRes = await fetch(
+              `${process.env.SUPABASE_URL}/rest/v1/products?name=eq.${encodeURIComponent(name)}`,
+              {
+                headers: {
+                  apikey: process.env.SUPABASE_KEY,
+                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                },
+              }
+            );
+            
+            const products = await productRes.json();
+            
+            if (products.length === 0) {
+              await reply(event.replyToken, "ไม่เจอสินค้านี้ครับ");
+              return;
+            }
+            
+            const productId = products[0].id;
+            
+            // 🔥 หา inventory
+            const invRes = await fetch(
+              `${process.env.SUPABASE_URL}/rest/v1/inventories?user_id=eq.${dbUserId}&product_id=eq.${productId}`,
+              {
+                headers: {
+                  apikey: process.env.SUPABASE_KEY,
+                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                },
+              }
+            );
+            
+            const inv = await invRes.json();
+            
+            if (inv.length === 0) {
+              await reply(event.replyToken, "ยังไม่มีของนี้ในบ้านครับ");
+              return;
+            }
+            
+            const currentQty = inv[0].quantity;
+            const newQty = Math.max(0, currentQty - quantity);
+            
+            // 🔥 update quantity
+            await fetch(
+              `${process.env.SUPABASE_URL}/rest/v1/inventories?id=eq.${inv[0].id}`,
+              {
+                method: "PATCH",
+                headers: {
+                  apikey: process.env.SUPABASE_KEY,
+                  Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  quantity: newQty,
+                }),
+              }
+            );
+            
+            await reply(
+              event.replyToken,
+              newQty === 0
+                ? `"${name}" หมดแล้วครับ`
+                : `เหลือ "${name}" ${newQty} ${unit} ครับ`
+            );
+            
             return;
           }
         }
